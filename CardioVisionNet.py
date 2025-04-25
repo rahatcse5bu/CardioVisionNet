@@ -1,678 +1,903 @@
-import numpy as np
-import tensorflow as tf
-import tensorflow_addons as tfa
-from tensorflow.keras import layers, Model, optimizers
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from tensorflow_addons.layers import SpectralNormalization
-from tensorflow.keras.layers import Layer, Conv1D, BatchNormalization, Activation, Add, Input
-from tensorflow.keras.regularizers import l2
-import scipy.signal as signal
-import pywt
+# Create a custom callback to save model after each epoch
+class SaveEpochCallback(tf.keras.callbacks.Callback):
+    """Custom callback to save model after each epoch to Google Drive"""
+    
+    def __init__(self, checkpoint_dir, save_frequency=1, max_to_keep=5):
+        super(SaveEpochCallback, self).__init__()
+        self.checkpoint_dir = checkpoint_dir
+        self.save_frequency = save_frequency
+        self.max_to_keep = max_to_keep
+        self.saved_checkpoints = []
+    
+    def on_epoch_end(self, epoch, logs=None):
+        if (epoch + 1) % self.save_frequency == 0:
+            # Create checkpoint directory if it doesn't exist
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
+            
+            # Save model
+            checkpoint_path = os.path.join(
+                self.checkpoint_dir, 
+                f'model_epoch_{epoch+1:03d}_val_loss_{logs["val_cvd_prediction_loss"]:.4f}.h5'
+            )
+            
+            self.model.save_weights(checkpoint_path)
+            print(f"\nSaved checkpoint at epoch {epoch+1} to {checkpoint_path}")
+            
+            # Add to list of saved checkpoints
+            self.saved_checkpoints.append(checkpoint_path)
+            
+            # Remove older checkpoints if we have too many
+            if len(self.saved_checkpoints) > self.max_to_keep:
+                oldest_checkpoint = self.saved_checkpoints.pop(0)
+                try:
+                    os.remove(oldest_checkpoint)
+                    print(f"Removed old checkpoint: {oldest_checkpoint}")
+                except:
+                    print(f"Failed to remove old checkpoint: {oldest_checkpoint}")
 
-class CardioVisionNet:
-    """
-    CardioVisionNet: Advanced deep learning architecture for ECG-based CVD prediction
-    Incorporates multiple specialized modules for optimal ECG signal processing and analysis
-    """
-    
-    def __init__(self, input_shape=(5000, 12), num_classes=5, learning_rate=0.001):
-        """
-        Initialize the CardioVisionNet model
-        
-        Args:
-            input_shape: Shape of input ECG signal (samples, leads)
-            num_classes: Number of CVD classification categories
-            learning_rate: Initial learning rate for optimizer
-        """
-        self.input_shape = input_shape
-        self.num_classes = num_classes
-        self.learning_rate = learning_rate
-        self.model = self._build_model()
-        
-    def _build_model(self):
-        """Constructs the complete CardioVisionNet architecture"""
-        inputs = Input(shape=self.input_shape)
-        
-        # 1. Signal preprocessing module
-        x = self._signal_preprocessing_module(inputs)
-        
-        # 2. Multi-pathway feature extraction
-        path1 = self._temporal_pathway(x)
-        path2 = self._morphological_pathway(x)
-        path3 = self._frequency_pathway(x)
-        path4 = self._phase_space_pathway(x)
-        
-        # 3. Multi-modal fusion with attention
-        fused_features = self._cross_attention_fusion([path1, path2, path3, path4])
-        
-        # 4. Transformer encoder for temporal context
-        context_features = self._transformer_encoder_block(fused_features)
-        
-        # 5. Cardiac graph neural network
-        graph_features = self._cardiac_graph_neural_network(context_features)
-        
-        # 6. Quantum-inspired neural layers
-        quantum_features = self._quantum_inspired_layer(graph_features)
-        
-        # 7. Meta-learning adaptation module
-        adaptive_features = self._meta_learning_adaptation(quantum_features)
-        
-        # 8. Physiological attention mechanism
-        attended_features = self._physiological_attention(adaptive_features)
-        
-        # 9. Classification head with uncertainty estimation
-        outputs = self._classification_head(attended_features)
-        
-        model = Model(inputs=inputs, outputs=outputs)
-        
-        # Compile with specialized loss and metrics
-        model.compile(
-            optimizer=self._build_optimizer(),
-            loss=self._adaptive_focal_loss,
-            metrics=['accuracy', self._sensitivity, self._specificity, self._f1_score]
-        )
-        
-        return model
-    
-    def _signal_preprocessing_module(self, inputs):
-        """Advanced signal preprocessing with domain-specific filters"""
-        
-        def wavelet_layer(x):
-            """Custom wavelet decomposition layer"""
-            # Implementation using TF ops for wavelet transform
-            batch_size = tf.shape(x)[0]
-            
-            def process_sample(sample):
-                # Convert to numpy for wavelet transform
-                sample_np = tf.numpy_function(
-                    func=lambda s: np.stack([pywt.wavedec(s_lead, 'sym4', level=4)[0] for s_lead in s.numpy()], axis=-1),
-                    inp=[sample],
-                    Tout=tf.float32
-                )
-                return sample_np
-            
-            # Map function across batch
-            processed = tf.map_fn(process_sample, x, fn_output_signature=tf.float32)
-            return processed
-        
-        # 1. Notch filter (50/60 Hz)
-        x = layers.Lambda(lambda x: self._apply_notch_filter(x))(inputs)
-        
-        # 2. Baseline wander removal
-        x = layers.Lambda(lambda x: self._remove_baseline_wander(x))(x)
-        
-        # 3. Wavelet denoising
-        x = layers.Lambda(wavelet_layer)(x)
-        
-        # 4. Normalization with learned parameters
-        x = layers.LayerNormalization()(x)
-        
-        return x
-    
-    def _temporal_pathway(self, x):
-        """Process temporal features of the ECG signal"""
-        # Deep residual network optimized for temporal patterns
-        x = self._temporal_residual_block(x, 64, 3)
-        x = self._temporal_residual_block(x, 128, 3)
-        x = self._temporal_residual_block(x, 256, 3)
-        
-        # Temporal attention mechanism
-        x = self._temporal_attention_module(x)
-        
-        return x
-    
-    def _morphological_pathway(self, x):
-        """Extract morphological features from ECG waveforms"""
-        # Use advanced depthwise separable convolutions
-        x = layers.SeparableConv1D(64, 5, padding='same')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation('swish')(x)
-        
-        # Extract P-QRS-T wave characteristics
-        x = self._cardiac_cycle_detector(x)
-        
-        # Implement morphology-specific feature extractors
-        p_wave_features = self._wave_feature_extractor(x, 'p_wave')
-        qrs_features = self._wave_feature_extractor(x, 'qrs')
-        t_wave_features = self._wave_feature_extractor(x, 't_wave')
-        
-        # Concatenate wave-specific features
-        x = layers.Concatenate()([p_wave_features, qrs_features, t_wave_features])
-        
-        return x
-    
-    def _frequency_pathway(self, x):
-        """Process frequency domain features"""
-        # Convert to frequency domain
-        x = layers.Lambda(lambda x: tf.signal.rfft(x))(x)
-        x = layers.Lambda(lambda x: tf.abs(x))(x)
-        
-        # Log-scaled frequency processing
-        x = layers.Lambda(lambda x: tf.math.log(x + 1e-6))(x)
-        
-        # Frequency-specific convolutional layers
-        x = Conv1D(64, 7, padding='same')(x)
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        
-        x = Conv1D(128, 5, padding='same')(x)
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        
-        return x
-    
-    def _phase_space_pathway(self, x):
-        """Novel phase-space transformation pathway"""
-        
-        def create_phase_space(signal, delay=10, dimension=3):
-            """Create phase space embedding from time series"""
-            # Implementation of phase space reconstruction
-            batch_size = tf.shape(signal)[0]
-            seq_len = tf.shape(signal)[1]
-            
-            def process_sample(sample):
-                # Process each sample in the batch
-                sample_np = tf.numpy_function(
-                    func=lambda s: np.array([
-                        [s[i + j*delay] for j in range(dimension)] 
-                        for i in range(seq_len - delay*(dimension-1))
-                    ]),
-                    inp=[sample],
-                    Tout=tf.float32
-                )
-                return sample_np
-            
-            # Map function across batch
-            return tf.map_fn(process_sample, signal, fn_output_signature=tf.float32)
-        
-        # Transform to phase space
-        x = layers.Lambda(lambda x: create_phase_space(x))(x)
-        
-        # Process with 2D convolutions to capture phase space patterns
-        x = layers.Reshape((-1, 3, 1))(x)
-        x = layers.Conv2D(32, (3, 3), padding='same')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation('relu')(x)
-        
-        # Extract topological features (simplified implementation)
-        x = layers.Conv2D(64, (3, 3), padding='same')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation('relu')(x)
-        
-        # Flatten the phase space features
-        x = layers.GlobalAveragePooling2D()(x)
-        
-        return x
-    
-    def _cross_attention_fusion(self, feature_paths):
-        """Fuse multiple feature pathways using cross-attention"""
-        # Project each pathway to common dimension
-        projected_features = []
-        for path in feature_paths:
-            if len(path.shape) == 2:
-                path = tf.expand_dims(path, axis=1)
-            x = layers.Dense(256)(path)
-            projected_features.append(x)
-        
-        # Concatenate all features
-        concatenated = layers.Concatenate(axis=1)(projected_features)
-        
-        # Multi-head self-attention for cross-pathway interactions
-        attention_output = layers.MultiHeadAttention(
-            num_heads=8, key_dim=32
-        )(concatenated, concatenated)
-        
-        # Add & normalize
-        x = layers.Add()([concatenated, attention_output])
-        x = layers.LayerNormalization()(x)
-        
-        # Feed-forward network
-        ffn_output = layers.Dense(512, activation='relu')(x)
-        ffn_output = layers.Dense(256)(ffn_output)
-        
-        # Add & normalize again
-        x = layers.Add()([x, ffn_output])
-        x = layers.LayerNormalization()(x)
-        
-        # Global pooling to combine all features
-        x = layers.GlobalAveragePooling1D()(x)
-        
-        return x
-    
-    def _transformer_encoder_block(self, x, heads=8, dim_head=64, dropout=0.1):
-        """Transformer encoder block for temporal context"""
-        # Reshape if needed
-        if len(x.shape) == 2:
-            x = tf.expand_dims(x, axis=1)
-        
-        # Self-attention mechanism
-        attention_output = layers.MultiHeadAttention(
-            num_heads=heads, key_dim=dim_head, dropout=dropout
-        )(x, x)
-        
-        # Add & normalize
-        x = layers.Add()([x, attention_output])
-        x = layers.LayerNormalization(epsilon=1e-6)(x)
-        
-        # Feed-forward network
-        ffn_output = layers.Dense(4 * x.shape[-1], activation='gelu')(x)
-        ffn_output = layers.Dropout(dropout)(ffn_output)
-        ffn_output = layers.Dense(x.shape[-1])(ffn_output)
-        ffn_output = layers.Dropout(dropout)(ffn_output)
-        
-        # Add & normalize again
-        x = layers.Add()([x, ffn_output])
-        x = layers.LayerNormalization(epsilon=1e-6)(x)
-        
-        # Global pooling
-        x = layers.GlobalAveragePooling1D()(x)
-        
-        return x
-    
-    def _cardiac_graph_neural_network(self, x):
-        """Custom graph neural network for cardiac relationships"""
-        # Since actual GNN implementations require specialized libraries,
-        # this is a simplified approximation using standard layers
-        
-        # Create node embeddings
-        node_embeddings = layers.Dense(128, activation='relu')(x)
-        
-        # Simulate message passing with self-attention
-        for _ in range(3):  # 3 message passing steps
-            # Self-attention to simulate messages between nodes
-            message = layers.Dense(128, activation='relu')(node_embeddings)
-            message = layers.Dense(128)(message)
-            
-            # Update node embeddings
-            node_embeddings = layers.Add()([node_embeddings, message])
-            node_embeddings = layers.LayerNormalization()(node_embeddings)
-        
-        # Global pooling to aggregate node features
-        graph_embedding = layers.Dense(256, activation='relu')(node_embeddings)
-        
-        return graph_embedding
-    
-    def _quantum_inspired_layer(self, x):
-        """Quantum-inspired neural processing layer"""
-        # Phase encoding
-        phase = layers.Dense(256, activation='tanh')(x)
-        phase = layers.Lambda(lambda x: x * np.pi)(phase)
-        
-        # Quantum amplitude encoding (using complex-valued computations)
-        cos_component = layers.Lambda(lambda x: tf.math.cos(x))(phase)
-        sin_component = layers.Lambda(lambda x: tf.math.sin(x))(phase)
-        
-        # Simulate interference
-        interference = layers.Lambda(
-            lambda inputs: inputs[0] * inputs[1]
-        )([cos_component, sin_component])
-        
-        # Combine quantum components
-        quantum_features = layers.Concatenate()([cos_component, sin_component, interference])
-        quantum_features = layers.Dense(512, activation='relu')(quantum_features)
-        
-        return quantum_features
-    
-    def _meta_learning_adaptation(self, x):
-        """Meta-learning module for patient-specific adaptation"""
-        # Context vector generation
-        context = layers.Dense(256, activation='relu')(x)
-        
-        # Hypernetwork to generate adaptive weights
-        adaptive_weights = layers.Dense(128, activation='relu')(context)
-        adaptive_weights = layers.Dense(128 * 64)(adaptive_weights)
-        adaptive_weights = layers.Reshape((128, 64))(adaptive_weights)
-        
-        # Apply adaptive transformation
-        features = layers.Dense(128, activation='relu')(x)
-        
-        # Dynamic convolution (simplified implementation)
-        adapted_features = layers.Lambda(
-            lambda inputs: tf.matmul(inputs[0], inputs[1])
-        )([features, adaptive_weights])
-        
-        return adapted_features
-    
-    def _physiological_attention(self, x):
-        """Attention mechanism based on cardiac physiology"""
-        # Generate attention scores for different physiological aspects
-        attention_pr = layers.Dense(64, activation='relu', name='pr_interval_attention')(x)
-        attention_qrs = layers.Dense(64, activation='relu', name='qrs_attention')(x)
-        attention_qt = layers.Dense(64, activation='relu', name='qt_interval_attention')(x)
-        
-        # Combine attention scores
-        attention_scores = layers.Concatenate()([attention_pr, attention_qrs, attention_qt])
-        attention_scores = layers.Dense(x.shape[-1], activation='softmax')(attention_scores)
-        
-        # Apply attention to features
-        attended_features = layers.Multiply()([x, attention_scores])
-        
-        return attended_features
-    
-    def _classification_head(self, x):
-        """Classification head with uncertainty estimation"""
-        # Feature compression
-        x = layers.Dense(256, activation='relu')(x)
-        x = layers.Dropout(0.3)(x)  # Monte Carlo dropout for uncertainty
-        
-        # Multiple specialized output heads for different CVD types
-        main_logits = layers.Dense(self.num_classes)(x)
-        
-        # Uncertainty estimation branch
-        uncertainty = layers.Dense(self.num_classes, activation='sigmoid', name='uncertainty')(x)
-        
-        # Combine predictions with uncertainty
-        calibrated_logits = layers.Lambda(
-            lambda inputs: inputs[0] * (1 - inputs[1])
-        )([main_logits, uncertainty])
-        
-        outputs = layers.Activation('softmax')(calibrated_logits)
-        
-        return outputs
-    
-    def _temporal_residual_block(self, x, filters, kernel_size):
-        """Custom residual block for temporal processing"""
-        # First Conv layer
-        shortcut = x
-        
-        x = SpectralNormalization(Conv1D(filters, kernel_size, padding='same'))(x)
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        
-        # Second Conv layer
-        x = SpectralNormalization(Conv1D(filters, kernel_size, padding='same'))(x)
-        x = BatchNormalization()(x)
-        
-        # Shortcut connection
-        if shortcut.shape[-1] != filters:
-            shortcut = Conv1D(filters, 1, padding='same')(shortcut)
-            shortcut = BatchNormalization()(shortcut)
-        
-        # Add shortcut to output
-        x = Add()([x, shortcut])
-        x = Activation('relu')(x)
-        
-        return x
-    
-    def _temporal_attention_module(self, x):
-        """Temporal attention specifically for ECG signals"""
-        # Generate attention weights
-        attention = Conv1D(1, 7, padding='same')(x)
-        attention = BatchNormalization()(attention)
-        attention = Activation('sigmoid')(attention)
-        
-        # Apply attention
-        return layers.Multiply()([x, attention])
-
-    def _cardiac_cycle_detector(self, x):
-        """Specialized module to identify cardiac cycle components"""
-        # QRS detection submodule
-        qrs_detector = Conv1D(32, 3, padding='same', activation='relu')(x)
-        qrs_detector = Conv1D(1, 1, padding='same', activation='sigmoid')(qrs_detector)
-        
-        # P-wave detection submodule
-        p_detector = Conv1D(32, 5, padding='same', activation='relu')(x)
-        p_detector = Conv1D(1, 1, padding='same', activation='sigmoid')(p_detector)
-        
-        # T-wave detection submodule
-        t_detector = Conv1D(32, 7, padding='same', activation='relu')(x)
-        t_detector = Conv1D(1, 1, padding='same', activation='sigmoid')(t_detector)
-        
-        # Combine detectors with original features
-        detectors = layers.Concatenate()([qrs_detector, p_detector, t_detector])
-        enhanced = layers.Concatenate()([x, detectors])
-        
-        return enhanced
-    
-    def _wave_feature_extractor(self, x, wave_type):
-        """Extract features specific to particular ECG waves"""
-        # Different kernel sizes based on wave type
-        if wave_type == 'p_wave':
-            kernel_size = 9
-        elif wave_type == 'qrs':
-            kernel_size = 5
-        elif wave_type == 't_wave':
-            kernel_size = 11
-        else:
-            kernel_size = 7
-            
-        # Specialized convolution for this wave type
-        x = Conv1D(32, kernel_size, padding='same')(x)
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        
-        # Extract morphological features
-        x = Conv1D(64, kernel_size - 2, padding='same')(x)
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        
-        # Global feature aggregation
-        x = layers.GlobalMaxPooling1D()(x)
-        
-        return x
-    
-    def _adaptive_focal_loss(self, y_true, y_pred):
-        """Specialized focal loss for imbalanced ECG datasets"""
-        epsilon = tf.keras.backend.epsilon()
-        y_pred = tf.clip_by_value(y_pred, epsilon, 1 - epsilon)
-        
-        # Calculate cross entropy
-        cross_entropy = -y_true * tf.math.log(y_pred)
-        
-        # Calculate focal weight
-        alpha = 0.25
-        gamma = 2.0
-        focal_weight = alpha * tf.pow(1 - y_pred, gamma) * y_true
-        
-        # Add disease-specific weights (could be expanded)
-        # Here we're simulating class weights
-        class_weights = tf.constant([1.0, 2.0, 3.0, 2.5, 1.5], dtype=tf.float32)
-        class_weights = tf.reshape(class_weights, [1, self.num_classes])
-        weighted_loss = cross_entropy * focal_weight * class_weights
-        
-        return tf.reduce_sum(weighted_loss, axis=-1)
-    
-    def _build_optimizer(self):
-        """Custom optimizer with learning rate schedule"""
-        # Cosine decay learning rate schedule
-        lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-            initial_learning_rate=self.learning_rate,
-            decay_steps=10000,
-            alpha=0.1
-        )
-        
-        # AdamW optimizer with weight decay
-        optimizer = tfa.optimizers.AdamW(
-            learning_rate=lr_schedule,
-            weight_decay=0.0001
-        )
-        
-        return optimizer
-    
-    def _sensitivity(self, y_true, y_pred):
-        """Calculate sensitivity/recall"""
-        true_positives = tf.reduce_sum(tf.round(tf.clip_by_value(y_true * y_pred, 0, 1)))
-        possible_positives = tf.reduce_sum(tf.round(tf.clip_by_value(y_true, 0, 1)))
-        return true_positives / (possible_positives + tf.keras.backend.epsilon())
-    
-    def _specificity(self, y_true, y_pred):
-        """Calculate specificity"""
-        true_negatives = tf.reduce_sum(tf.round(tf.clip_by_value((1-y_true) * (1-y_pred), 0, 1)))
-        possible_negatives = tf.reduce_sum(tf.round(tf.clip_by_value(1-y_true, 0, 1)))
-        return true_negatives / (possible_negatives + tf.keras.backend.epsilon())
-    
-    def _f1_score(self, y_true, y_pred):
-        """Calculate F1 score"""
-        precision = self._precision(y_true, y_pred)
-        recall = self._sensitivity(y_true, y_pred)
-        return 2 * ((precision * recall) / (precision + recall + tf.keras.backend.epsilon()))
-    
-    def _precision(self, y_true, y_pred):
-        """Calculate precision"""
-        true_positives = tf.reduce_sum(tf.round(tf.clip_by_value(y_true * y_pred, 0, 1)))
-        predicted_positives = tf.reduce_sum(tf.round(tf.clip_by_value(y_pred, 0, 1)))
-        return true_positives / (predicted_positives + tf.keras.backend.epsilon())
-    
-    def _apply_notch_filter(self, x):
-        """Apply notch filter to remove power line interference"""
-        # Implementation using tf.signal operations
-        # This is a simplified version - a real implementation would use
-        # more sophisticated filtering techniques
-        return x  # Placeholder
-    
-    def _remove_baseline_wander(self, x):
-        """Remove baseline wander from ECG signals"""
-        # Implementation using tf.signal operations
-        # This is a simplified version - a real implementation would use
-        # more sophisticated filtering techniques
-        return x  # Placeholder
-        
-    def fit(self, x_train, y_train, validation_data=None, epochs=100, batch_size=32):
-        """Train the CardioVisionNet model"""
-        callbacks = [
-            EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
-        ]
-        
-        return self.model.fit(
-            x_train, y_train,
-            validation_data=validation_data,
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=callbacks
-        )
-    
-    def predict(self, x, monte_carlo_samples=10):
-        """
-        Predict with uncertainty estimation using Monte Carlo dropout
-        
-        Args:
-            x: Input ECG data
-            monte_carlo_samples: Number of forward passes with dropout enabled
-            
-        Returns:
-            predictions: Mean prediction probabilities
-            uncertainties: Standard deviation of predictions
-        """
-        # Enable dropout during inference
-        predictions = []
-        
-        # Multiple forward passes with dropout enabled
-        for _ in range(monte_carlo_samples):
-            pred = self.model(x, training=True)
-            predictions.append(pred)
-            
-        # Stack predictions
-        stacked_preds = tf.stack(predictions, axis=0)
-        
-        # Calculate mean and standard deviation
-        mean_pred = tf.reduce_mean(stacked_preds, axis=0)
-        std_pred = tf.math.reduce_std(stacked_preds, axis=0)
-        
-        return mean_pred, std_pred
-    
-    def interpret(self, x):
-        """Generate model interpretations using Grad-CAM"""
-        # This is a simplified implementation - a full implementation would
-        # require custom Grad-CAM for 1D signals
-        
-        # Build a model that outputs both predictions and the last conv layer activations
-        last_conv_layer = None
-        for layer in self.model.layers:
-            if isinstance(layer, Conv1D):
-                last_conv_layer = layer.name
-                
-        if last_conv_layer is None:
-            return None
-            
-        grad_model = Model(
-            inputs=self.model.inputs,
-            outputs=[
-                self.model.get_layer(last_conv_layer).output,
-                self.model.output
-            ]
-        )
-        
-        # Compute gradient of top predicted class with respect to activations
-        with tf.GradientTape() as tape:
-            conv_output, predictions = grad_model(x)
-            top_pred_index = tf.argmax(predictions[0])
-            top_class_channel = predictions[:, top_pred_index]
-            
-        # Gradient of the top predicted class with respect to the output feature map
-        grads = tape.gradient(top_class_channel, conv_output)
-        
-        # Vector of mean values of gradients over feature map width
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1))
-        
-        # Weight the channels by the gradient importance
-        heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_output), axis=-1)
-        
-        # Normalize the heatmap
-        heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
-        
-        return heatmap.numpy()
-
-    def export_onnx(self, save_path):
-        """Export the model to ONNX format for deployment"""
-        try:
-            import tf2onnx
-            import onnx
-            
-            # Create dummy input
-            dummy_input = np.zeros((1, *self.input_shape), dtype=np.float32)
-            
-            # Convert to ONNX
-            onnx_model, _ = tf2onnx.convert.from_keras(self.model, input_signature=[
-                tf.TensorSpec(dummy_input.shape, tf.float32, name="input")
-            ])
-            
-            # Save the model
-            onnx.save(onnx_model, save_path)
-            
-            return True
-        except ImportError:
-            print("Please install tf2onnx and onnx packages: pip install tf2onnx onnx")
-            return False
-
-# Example usage
-def run_example():
-    # Generate synthetic data
-    n_samples = 1000
-    seq_length = 5000
-    n_leads = 12
-    
-    # Create random ECG data
-    X_train = np.random.randn(n_samples, seq_length, n_leads).astype(np.float32)
-    
-    # Create random labels (5 CVD classes)
-    y_train = np.random.randint(0, 5, size=(n_samples,))
-    y_train = tf.keras.utils.to_categorical(y_train, num_classes=5)
-    
-    # Initialize the model
-    model = CardioVisionNet(input_shape=(seq_length, n_leads), num_classes=5)
-    
-    # Train for just a few epochs (for demonstration)
-    model.fit(
-        X_train[:800], y_train[:800],
-        validation_data=(X_train[800:], y_train[800:]),
-        epochs=2,
-        batch_size=16
+# Create a UI for CardioVisionNet
+def create_cardiovisionnet_ui():
+    # Data source widgets
+    url_input = widgets.Text(
+        value='',
+        placeholder='URL to zip file (http:// or Google Drive link)',
+        description='Data URL:',
+        disabled=False,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='80%')
     )
     
-    # Make predictions
-    test_sample = X_train[:5]
-    predictions, uncertainty = model.predict(test_sample)
+    upload_button = widgets.Button(
+        description='Upload Zip File',
+        disabled=False,
+        button_style='',
+        tooltip='Upload from your computer',
+        icon='upload'
+    )
     
-    print("Predictions shape:", predictions.shape)
-    print("Uncertainty shape:", uncertainty.shape)
+    drive_path_input = widgets.Text(
+        value='',
+        placeholder='Path to zip file in Google Drive (e.g., MyDrive/data.zip)',
+        description='Drive Path:',
+        disabled=False,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='80%')
+    )
     
-    # Get interpretations
-    heatmap = model.interpret(test_sample[:1])
-    if heatmap is not None:
-        print("Heatmap shape:", heatmap.shape)
+    labels_path_input = widgets.Text(
+        value='',
+        placeholder='Path to labels file (CSV or Excel)',
+        description='Labels Path:',
+        disabled=False,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='80%')
+    )
+    
+    # Data configuration widgets
+    lead_count_input = widgets.IntSlider(
+        value=12,
+        min=1,
+        max=16,
+        step=1,
+        description='Lead Count:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='d',
+        style={'description_width': 'initial'}
+    )
+    
+    sample_length_input = widgets.IntSlider(
+        value=5000,
+        min=1000,
+        max=10000,
+        step=500,
+        description='Sample Length:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='d',
+        style={'description_width': 'initial'}
+    )
+    
+    # Train/test/validation split widgets
+    test_size_input = widgets.FloatSlider(
+        value=0.2,
+        min=0.1,
+        max=0.5,
+        step=0.05,
+        description='Test Size:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='.2f',
+        style={'description_width': 'initial'}
+    )
+    
+    val_size_input = widgets.FloatSlider(
+        value=0.2,
+        min=0.1,
+        max=0.5,
+        step=0.05,
+        description='Validation Size:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='.2f',
+        style={'description_width': 'initial'}
+    )
+    
+    # Model configuration widgets
+    epochs_input = widgets.IntSlider(
+        value=50,
+        min=10,
+        max=200,
+        step=10,
+        description='Epochs:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='d',
+        style={'description_width': 'initial'}
+    )
+    
+    batch_size_input = widgets.IntSlider(
+        value=32,
+        min=8,
+        max=256,
+        step=8,
+        description='Batch Size:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='d',
+        style={'description_width': 'initial'}
+    )
+    
+    learning_rate_input = widgets.FloatLogSlider(
+        value=0.001,
+        base=10,
+        min=-4,
+        max=-2,
+        step=0.1,
+        description='Learning Rate:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='.5f',
+        style={'description_width': 'initial'}
+    )
+    
+    # Checkpoint directory in Google Drive
+    checkpoint_dir_input = widgets.Text(
+        value='MyDrive/CardioVisionNet/checkpoints',
+        placeholder='Path in Google Drive to save checkpoints',
+        description='Checkpoint Dir:',
+        disabled=False,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='80%')
+    )
+    
+    # Save frequency
+    save_frequency_input = widgets.IntSlider(
+        value=1,
+        min=1,
+        max=10,
+        step=1,
+        description='Save Every N Epochs:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='d',
+        style={'description_width': 'initial'}
+    )
+    
+    # Advanced model parameters
+    advanced_toggle = widgets.ToggleButton(
+        value=False,
+        description='Show Advanced Options',
+        disabled=False,
+        button_style='',
+        tooltip='Toggle advanced options visibility',
+        icon='cog'
+    )
+    
+    weight_decay_input = widgets.FloatLogSlider(
+        value=0.0001,
+        base=10,
+        min=-5,
+        max=-2,
+        step=0.1,
+        description='Weight Decay:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='.5f',
+        style={'description_width': 'initial'}
+    )
+    
+    dropout_rate_input = widgets.FloatSlider(
+        value=0.3,
+        min=0.1,
+        max=0.5,
+        step=0.05,
+        description='Dropout Rate:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='.2f',
+        style={'description_width': 'initial'}
+    )
+    
+    filters_base_input = widgets.IntSlider(
+        value=64,
+        min=16,
+        max=128,
+        step=16,
+        description='Filters Base:',
+        disabled=False,
+        continuous_update=False,
+        orientation='horizontal',
+        readout=True,
+        readout_format='d',
+        style={'description_width': 'initial'}
+    )
+    
+    use_self_supervision_input = widgets.Checkbox(
+        value=True,
+        description='Use Self-Supervised Learning',
+        disabled=False,
+        indent=False,
+        style={'description_width': 'initial'}
+    )
+    
+    # Run button
+    run_button = widgets.Button(
+        description='Run CardioVisionNet',
+        disabled=False,
+        button_style='success',
+        tooltip='Start training',
+        icon='play'
+    )
+    
+    # Stop button (will be used to stop training)
+    stop_button = widgets.Button(
+        description='Stop Training',
+        disabled=True,
+        button_style='danger',
+        tooltip='Stop training',
+        icon='stop'
+    )
+    
+    # Status output
+    status_output = widgets.Output()
+    
+    # Create tabs for different input methods
+    data_source_tabs = widgets.Tab()
+    data_source_tabs.children = [
+        widgets.VBox([url_input]),
+        widgets.VBox([upload_button]),
+        widgets.VBox([drive_path_input])
+    ]
+    data_source_tabs.set_title(0, 'URL')
+    data_source_tabs.set_title(1, 'Upload')
+    data_source_tabs.set_title(2, 'Google Drive')
+    
+    # Advanced options container
+    advanced_options = widgets.VBox([
+        weight_decay_input,
+        dropout_rate_input,
+        filters_base_input,
+        use_self_supervision_input
+    ])
+    advanced_options.layout.display = 'none'
+    
+    def toggle_advanced_options(change):
+        if change['new']:
+            advanced_options.layout.display = 'flex'
+            advanced_toggle.description = 'Hide Advanced Options'
+        else:
+            advanced_options.layout.display = 'none'
+            advanced_toggle.description = 'Show Advanced Options'
+    
+    advanced_toggle.observe(toggle_advanced_options, names='value')
+    
+    # Organize widgets into sections
+    data_section = widgets.VBox([
+        widgets.HTML(value="<h3>Data Source</h3>"),
+        data_source_tabs,
+        labels_path_input,
+        widgets.HBox([lead_count_input, sample_length_input])
+    ])
+    
+    split_section = widgets.VBox([
+        widgets.HTML(value="<h3>Data Split</h3>"),
+        widgets.HBox([test_size_input, val_size_input])
+    ])
+    
+    training_section = widgets.VBox([
+        widgets.HTML(value="<h3>Training Parameters</h3>"),
+        epochs_input,
+        batch_size_input,
+        learning_rate_input,
+        advanced_toggle,
+        advanced_options
+    ])
+    
+    checkpoint_section = widgets.VBox([
+        widgets.HTML(value="<h3>Checkpoints</h3>"),
+        checkpoint_dir_input,
+        save_frequency_input
+    ])
+    
+    button_section = widgets.HBox([run_button, stop_button])
+    
+    # Main UI
+    ui = widgets.VBox([
+        data_section,
+        split_section,
+        training_section,
+        checkpoint_section,
+        button_section,
+        status_output
+    ])
+    
+    # Training state
+    training_in_progress = False
+    model = None
+    
+    # Upload handler
+    def handle_upload(b):
+        with status_output:
+            clear_output()
+            print("Please upload your zip file...")
+            uploaded = files.upload()
+            
+            if uploaded:
+                # Get the filename of the uploaded file
+                filename = list(uploaded.keys())[0]
+                print(f"Uploaded file: {filename}")
+                
+                # Set the filename in the UI
+                url_input.value = filename
+                
+                # Switch to URL tab
+                data_source_tabs.selected_index = 0
+    
+    upload_button.on_click(handle_upload)
+    
+    # Run handler
+    def handle_run(b):
+        nonlocal training_in_progress, model
+        if training_in_progress:
+            with status_output:
+                print("Training already in progress. Please wait or stop it first.")
+            return
         
-    return model
+        # Update UI state
+        run_button.disabled = True
+        stop_button.disabled = False
+        training_in_progress = True
+        
+        with status_output:
+            clear_output()
+            try:
+                # Mount Google Drive if needed
+                if not os.path.exists('/content/drive'):
+                    drive.mount('/content/drive')
+                
+                # Get data source based on selected tab
+                selected_tab = data_source_tabs.selected_index
+                
+                data_source = None
+                if selected_tab == 0:  # URL
+                    url = url_input.value
+                    if not url:
+                        raise ValueError("Please enter a URL")
+                    
+                    # If it's a local file (from upload), use it directly
+                    if os.path.exists(url):
+                        data_source = url
+                    elif 'drive.google.com' in url:
+                        # Download from Google Drive
+                        data_source = download_from_drive_url(url)
+                    else:
+                        # Download from regular URL
+                        data_source = download_from_url(url)
+                
+                elif selected_tab == 1:  # Upload
+                    print("Please use the 'Upload' button to upload a file first")
+                    training_in_progress = False
+                    run_button.disabled = False
+                    stop_button.disabled = True
+                    return
+                
+                elif selected_tab == 2:  # Google Drive
+                    drive_path = drive_path_input.value
+                    if not drive_path:
+                        raise ValueError("Please enter a path in Google Drive")
+                    
+                    # Make sure it's a full path
+                    if not drive_path.startswith('/'):
+                        full_path = os.path.join('/content/drive', drive_path)
+                    else:
+                        full_path = drive_path
+                    
+                    if not os.path.exists(full_path):
+                        raise ValueError(f"File not found: {full_path}")
+                    
+                    data_source = full_path
+                
+                # CardioVisionNet for ECG-based CVD Prediction
+# Created with Claude 3.7 Sonnet
 
-if __name__ == "__main__":
-    model = run_example()
+# Install required packages
+!pip install tensorflow tensorflow-addons pywt scipy pandas matplotlib ipywidgets gdown plotly seaborn
+
+# Download the CardioVisionNet module if not already present
+import os
+if not os.path.exists('cardiovisionnet.py'):
+    !wget https://raw.githubusercontent.com/yourusername/cardiovisionnet/main/cardiovisionnet.py
+
+# Import modules
+import sys
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+from IPython.display import display, HTML
+import ipywidgets as widgets
+from google.colab import drive, files
+import zipfile
+import tempfile
+import shutil
+import gdown
+import pandas as pd
+from datetime import datetime
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+# Import CardioVisionNet
+# If module doesn't exist yet, create it using the code provided separately
+exec(open('cardiovisionnet.py').read())
+
+# Create folder data loader helper code
+import os
+import numpy as np
+import zipfile
+import tempfile
+import shutil
+import glob
+import pandas as pd
+from scipy.io import loadmat
+from scipy.signal import resample
+
+def load_data_from_folders(data_folder, labels_file=None, lead_count=12, sample_length=5000):
+    """
+    Load ECG data from a folder structure
+    
+    Args:
+        data_folder: Path to folder containing ECG files (supports nested folders)
+        labels_file: Optional path to CSV/Excel file with labels
+        lead_count: Number of ECG leads to expect
+        sample_length: Length to resample all ECG signals to
+        
+    Returns:
+        X_data: ECG data as numpy array (samples, time_points, leads)
+        y_labels: Labels as numpy array
+    """
+    print(f"Loading data from folder: {data_folder}")
+    
+    # Find all ECG files (supporting multiple formats)
+    ecg_files = []
+    
+    # Support for .mat files (MATLAB)
+    ecg_files.extend(glob.glob(os.path.join(data_folder, "**/*.mat"), recursive=True))
+    
+    # Support for .csv files
+    ecg_files.extend(glob.glob(os.path.join(data_folder, "**/*.csv"), recursive=True))
+    
+    # Support for .txt files
+    ecg_files.extend(glob.glob(os.path.join(data_folder, "**/*.txt"), recursive=True))
+    
+    # Support for .edf files (European Data Format for EEG/ECG)
+    ecg_files.extend(glob.glob(os.path.join(data_folder, "**/*.edf"), recursive=True))
+    
+    print(f"Found {len(ecg_files)} ECG files")
+    
+    if len(ecg_files) == 0:
+        raise ValueError(f"No supported ECG files found in {data_folder}")
+    
+    # Load labels if provided
+    labels_dict = None
+    if labels_file is not None:
+        labels_dict = load_labels_file(labels_file)
+    
+    # Process each file and load the data
+    X_data = []
+    y_labels = []
+    file_ids = []
+    
+    for file_path in ecg_files:
+        try:
+            # Extract file ID (using filename without extension)
+            file_id = os.path.splitext(os.path.basename(file_path))[0]
+            file_ids.append(file_id)
+            
+            # Load ECG data based on file format
+            ecg_data = load_ecg_file(file_path, lead_count, sample_length)
+            
+            if ecg_data is not None:
+                X_data.append(ecg_data)
+                
+                # Get label if available
+                if labels_dict is not None:
+                    if file_id in labels_dict:
+                        y_labels.append(labels_dict[file_id])
+                    else:
+                        # If no label found, use a placeholder
+                        y_labels.append(-1)  # Will be filtered later
+                        print(f"Warning: No label found for {file_id}")
+        except Exception as e:
+            print(f"Error processing file {file_path}: {str(e)}")
+    
+    # Convert to numpy arrays
+    X_data = np.array(X_data)
+    
+    # Handle labels
+    if labels_dict is not None:
+        y_labels = np.array(y_labels)
+        
+        # Filter out samples without labels
+        if -1 in y_labels:
+            valid_indices = y_labels != -1
+            X_data = X_data[valid_indices]
+            y_labels = y_labels[valid_indices]
+            print(f"Filtered out {np.sum(~valid_indices)} samples without labels")
+    else:
+        # If no labels file provided, create dummy labels
+        y_labels = np.zeros(len(X_data))
+        print("No labels file provided. Created dummy labels.")
+    
+    print(f"Loaded {X_data.shape[0]} samples with shape {X_data.shape[1:]} and {len(np.unique(y_labels))} classes")
+    
+    return X_data, y_labels
+
+def load_data_from_zip(zip_file, labels_file=None, lead_count=12, sample_length=5000):
+    """
+    Load ECG data from a zip file
+    
+    Args:
+        zip_file: Path to zip file containing ECG data
+        labels_file: Optional path to CSV/Excel file with labels
+        lead_count: Number of ECG leads to expect
+        sample_length: Length to resample all ECG signals to
+        
+    Returns:
+        X_data: ECG data as numpy array (samples, time_points, leads)
+        y_labels: Labels as numpy array
+    """
+    print(f"Loading data from zip file: {zip_file}")
+    
+    # Create a temporary directory for extraction
+    temp_dir = tempfile.mkdtemp()
+    
+    try:
+        # Extract zip file
+        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        
+        # Load data from the extracted folder
+        return load_data_from_folders(temp_dir, labels_file, lead_count, sample_length)
+        
+    finally:
+        # Clean up the temporary directory
+        shutil.rmtree(temp_dir)
+
+def load_labels_file(labels_file):
+    """
+    Load labels from CSV or Excel file
+    
+    Args:
+        labels_file: Path to CSV or Excel file with labels
+        
+    Returns:
+        Dictionary mapping file IDs to labels
+    """
+    # Determine file type and load accordingly
+    file_ext = os.path.splitext(labels_file)[1].lower()
+    
+    if file_ext == '.csv':
+        df = pd.read_csv(labels_file)
+    elif file_ext in ['.xlsx', '.xls']:
+        df = pd.read_excel(labels_file)
+    else:
+        raise ValueError(f"Unsupported labels file format: {file_ext}")
+    
+    # Check for required columns
+    required_columns = ['file_id', 'label']
+    
+    # Try to find columns with similar names
+    file_id_col = None
+    label_col = None
+    
+    for col in df.columns:
+        if col.lower() in ['file_id', 'fileid', 'id', 'filename', 'file']:
+            file_id_col = col
+        elif col.lower() in ['label', 'class', 'diagnosis', 'category', 'condition']:
+            label_col = col
+    
+    if file_id_col is None or label_col is None:
+        raise ValueError(f"Could not find required columns in labels file. Needed: file_id, label. Found: {df.columns.tolist()}")
+    
+    # Create dictionary mapping file IDs to labels
+    labels_dict = {}
+    
+    for _, row in df.iterrows():
+        file_id = str(row[file_id_col])
+        label = row[label_col]
+        labels_dict[file_id] = label
+    
+    print(f"Loaded {len(labels_dict)} labels from {labels_file}")
+    
+    return labels_dict
+
+def load_ecg_file(file_path, lead_count=12, sample_length=5000):
+    """
+    Load ECG data from various file formats
+    
+    Args:
+        file_path: Path to ECG file
+        lead_count: Number of ECG leads to expect
+        sample_length: Length to resample all signals to
+        
+    Returns:
+        ECG data as numpy array (time_points, leads)
+    """
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    if file_ext == '.mat':
+        return load_mat_file(file_path, lead_count, sample_length)
+    elif file_ext == '.csv':
+        return load_csv_file(file_path, lead_count, sample_length)
+    elif file_ext == '.txt':
+        return load_txt_file(file_path, lead_count, sample_length)
+    elif file_ext == '.edf':
+        return load_edf_file(file_path, lead_count, sample_length)
+    else:
+        print(f"Unsupported file format: {file_ext}")
+        return None
+
+def load_mat_file(file_path, lead_count=12, sample_length=5000):
+    """Load ECG data from MATLAB .mat file"""
+    try:
+        mat_data = loadmat(file_path)
+        
+        # Find the ECG data array - mat files can have different structures
+        ecg_data = None
+        
+        # Common field names in ECG mat files
+        possible_fields = ['ECG', 'ecg', 'EKG', 'ekg', 'data', 'signal', 'val']
+        
+        for field in possible_fields:
+            if field in mat_data and isinstance(mat_data[field], np.ndarray):
+                ecg_data = mat_data[field]
+                break
+        
+        if ecg_data is None:
+            # If no standard field found, try the first array with appropriate shape
+            for key, value in mat_data.items():
+                if isinstance(value, np.ndarray) and len(value.shape) >= 2:
+                    if value.shape[0] > value.shape[1]:  # Assume time is the longer dimension
+                        ecg_data = value
+                    else:
+                        ecg_data = value.T
+                    break
+        
+        if ecg_data is None:
+            print(f"Could not find ECG data in {file_path}")
+            return None
+        
+        # Handle different possible layouts
+        if len(ecg_data.shape) == 1:
+            # Single lead ECG
+            ecg_data = ecg_data.reshape(-1, 1)
+        elif len(ecg_data.shape) > 2:
+            # Multi-dimensional, flatten to 2D (time, leads)
+            ecg_data = ecg_data.reshape(ecg_data.shape[0], -1)
+        
+        # Ensure correct lead count
+        if ecg_data.shape[1] < lead_count:
+            # Pad with zeros if fewer leads than expected
+            padding = np.zeros((ecg_data.shape[0], lead_count - ecg_data.shape[1]))
+            ecg_data = np.hstack((ecg_data, padding))
+        elif ecg_data.shape[1] > lead_count:
+            # Use only the first lead_count leads
+            ecg_data = ecg_data[:, :lead_count]
+        
+        # Resample to the desired length
+        if ecg_data.shape[0] != sample_length:
+            resampled_data = np.zeros((sample_length, ecg_data.shape[1]))
+            for i in range(ecg_data.shape[1]):
+                resampled_data[:, i] = resample(ecg_data[:, i], sample_length)
+            ecg_data = resampled_data
+        
+        return ecg_data
+        
+    except Exception as e:
+        print(f"Error loading MAT file {file_path}: {str(e)}")
+        return None
+
+def load_csv_file(file_path, lead_count=12, sample_length=5000):
+    """Load ECG data from CSV file"""
+    try:
+        # Load CSV (may have header or not)
+        try:
+            # Try with header
+            df = pd.read_csv(file_path)
+            
+            # Check if there are actual headers or if first row is data
+            first_row = df.iloc[0].values
+            if all(isinstance(x, (int, float)) or (isinstance(x, str) and x.replace('.', '', 1).replace('-', '', 1).isdigit()) for x in first_row):
+                # First row seems to be data, reload without header
+                df = pd.read_csv(file_path, header=None)
+        except:
+            # Try without header
+            df = pd.read_csv(file_path, header=None)
+        
+        # Convert to numpy array
+        ecg_data = df.values
+        
+        # Determine orientation - time should be the longer dimension
+        if ecg_data.shape[0] < ecg_data.shape[1]:
+            ecg_data = ecg_data.T
+        
+        # Ensure correct lead count
+        if ecg_data.shape[1] < lead_count:
+            # Pad with zeros if fewer leads than expected
+            padding = np.zeros((ecg_data.shape[0], lead_count - ecg_data.shape[1]))
+            ecg_data = np.hstack((ecg_data, padding))
+        elif ecg_data.shape[1] > lead_count:
+            # Use only the first lead_count leads
+            ecg_data = ecg_data[:, :lead_count]
+        
+        # Resample to the desired length
+        if ecg_data.shape[0] != sample_length:
+            resampled_data = np.zeros((sample_length, ecg_data.shape[1]))
+            for i in range(ecg_data.shape[1]):
+                resampled_data[:, i] = resample(ecg_data[:, i], sample_length)
+            ecg_data = resampled_data
+        
+        return ecg_data
+        
+    except Exception as e:
+        print(f"Error loading CSV file {file_path}: {str(e)}")
+        return None
+
+def load_txt_file(file_path, lead_count=12, sample_length=5000):
+    """Load ECG data from text file"""
+    try:
+        # Try various delimiters
+        for delimiter in [',', '\t', ' ']:
+            try:
+                # Load text file with the current delimiter
+                data = np.loadtxt(file_path, delimiter=delimiter)
+                
+                # If successful, process the data
+                if len(data.shape) == 1:
+                    # Single lead ECG
+                    data = data.reshape(-1, 1)
+                
+                # Determine orientation - time should be the longer dimension
+                if data.shape[0] < data.shape[1]:
+                    data = data.T
+                
+                # Ensure correct lead count
+                if data.shape[1] < lead_count:
+                    # Pad with zeros if fewer leads than expected
+                    padding = np.zeros((data.shape[0], lead_count - data.shape[1]))
+                    data = np.hstack((data, padding))
+                elif data.shape[1] > lead_count:
+                    # Use only the first lead_count leads
+                    data = data[:, :lead_count]
+                
+                # Resample to the desired length
+                if data.shape[0] != sample_length:
+                    resampled_data = np.zeros((sample_length, data.shape[1]))
+                    for i in range(data.shape[1]):
+                        resampled_data[:, i] = resample(data[:, i], sample_length)
+                    data = resampled_data
+                
+                return data
+                
+            except:
+                # Try next delimiter
+                continue
+        
+        # If all delimiters failed
+        print(f"Failed to parse text file {file_path} with any delimiter")
+        return None
+        
+    except Exception as e:
+        print(f"Error loading text file {file_path}: {str(e)}")
+        return None
+
+def load_edf_file(file_path, lead_count=12, sample_length=5000):
+    """Load ECG data from EDF (European Data Format) file"""
+    try:
+        # EDF files require the pyedflib package
+        import pyedflib
+        
+        # Load EDF file
+        with pyedflib.EdfReader(file_path) as f:
+            n_channels = f.signals_in_file
+            channel_count = min(n_channels, lead_count)
+            
+            # Initialize array for data
+            data = np.zeros((f.getNSamples()[0], channel_count))
+            
+            # Read each channel
+            for i in range(channel_count):
+                data[:, i] = f.readSignal(i)
+            
+            # Pad with zeros if fewer leads than expected
+            if channel_count < lead_count:
+                padding = np.zeros((data.shape[0], lead_count - channel_count))
+                data = np.hstack((data, padding))
+            
+            # Resample to the desired length
+            if data.shape[0] != sample_length:
+                resampled_data = np.zeros((sample_length, data.shape[1]))
+                for i in range(data.shape[1]):
+                    resampled_data[:, i] = resample(data[:, i], sample_length)
+                data = resampled_data
+            
+            return data
+            
+    except ImportError:
+        print("pyedflib is required to load EDF files. Install with: pip install pyedflib")
+        return None
+    except Exception as e:
+        print(f"Error loading EDF file {file_path}: {str(e)}")
+        return None
+
+# Download from Google Drive URL
+def download_from_drive_url(url, destination=None):
+    """
+    Download a file from Google Drive
+    
+    Args:
+        url: Google Drive URL
+        destination: Where to save the file
+        
+    Returns:
+        Path to the downloaded file
+    """
+    if destination is None:
+        # Create temp file
+        _, destination = tempfile.mkstemp()
+    
+    print(f"Downloading from Google Drive URL: {url}")
+    
+    # Extract file ID from URL
+    if '/file/d/' in url:
+        file_id = url.split('/file/d/')[1].split('/')[0]
+    elif 'id=' in url:
+        file_id = url.split('id=')[1].split('&')[0]
+    else:
+        raise ValueError(f"Couldn't extract file ID from URL: {url}")
+    
+    # Use gdown to download
+    gdown.download(id=file_id, output=destination, quiet=False)
+    
+    return destination
