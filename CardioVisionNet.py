@@ -1,10 +1,7 @@
-# CardioVisionNet Complete Implementation for Colab
-# Install required packages
-!pip uninstall -y tensorflow tensorflow-addons
-!pip install tensorflow==2.15.0
-!pip install tensorflow-addons==0.23.0
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow logging
-!pip install -q tensorflow==2.15.0 tensorflow-addons==0.23.0 pywavelets scipy pandas matplotlib ipywidgets gdown seaborn
+# CardioVisionNet Complete Implementation for ECG Image-based CVD Prediction
+# Author: Research Team
+# Description: Advanced deep learning model for cardiovascular disease prediction from ECG images
+
 # Import necessary libraries
 import os
 import sys
@@ -14,58 +11,105 @@ import tensorflow_addons as tfa
 from tensorflow.keras import layers, Model, optimizers
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, TensorBoard
 from tensorflow_addons.layers import SpectralNormalization
-from tensorflow.keras.layers import Layer, Conv1D, BatchNormalization, Activation, Add, Input
+from tensorflow.keras.layers import Layer, Conv1D, Conv2D, SeparableConv2D, BatchNormalization, Activation, Add, Input
+from tensorflow.keras.layers import Dense, Dropout, MaxPooling2D, GlobalAveragePooling2D, Concatenate, Reshape
 from tensorflow.keras.regularizers import l2
 import scipy.signal as signal
-import pywt
+from scipy.io import loadmat
 import matplotlib.pyplot as plt
-from IPython.display import display, HTML, clear_output
-import ipywidgets as widgets
-from google.colab import drive, files
-import zipfile
-import tempfile
-import shutil
-import gdown
 import pandas as pd
 from datetime import datetime
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix, classification_report
 import urllib.request
 import glob
+import zipfile
+import tempfile
+import shutil
+import json
 
-# Mount Google Drive
-drive.mount('/content/drive')
+# Dynamically import optional dependencies
+try:
+    import cv2
+except ImportError:
+    print("OpenCV not installed. Installing it for image processing...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python"])
+    import cv2
+
+try:
+    import seaborn as sns
+except ImportError:
+    print("Seaborn not installed. Installing it for visualization...")
+    try:
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "seaborn"])
+        import seaborn as sns
+    except:
+        print("Failed to install seaborn. Visualizations may be limited.")
+
+try:
+    # Only import these if available
+    from tensorflow.keras.applications import EfficientNetV2B0, ResNet50, DenseNet121
+except ImportError:
+    print("Some TensorFlow applications may not be available. Using alternatives if needed.")
+
+# Check for GPU availability
+physical_devices = tf.config.list_physical_devices('GPU')
+if physical_devices:
+    print(f"GPU is available: {physical_devices}")
+    try:
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+        print("Memory growth enabled on GPU devices")
+    except:
+        print("Memory growth couldn't be enabled")
+else:
+    print("No GPU found, running on CPU")
+    
+# Set up TensorFlow to use mixed precision for faster training
+try:
+    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+    print("Mixed precision enabled for faster training")
+except:
+    print("Mixed precision not enabled")
 
 #----------------------- CardioVisionNet Implementation -----------------------#
 
 class CardioVisionNet:
     """
-    CardioVisionNet: Advanced deep learning architecture for ECG-based CVD prediction
+    CardioVisionNet: Advanced deep learning architecture for ECG image-based CVD prediction
     
-    A multi-modal, multi-pathway neural network architecture that integrates signal processing, 
+    A multi-modal, multi-pathway neural network architecture that integrates computer vision,
     deep learning, and physiologically-informed components for robust cardiovascular disease 
-    classification from 12-lead ECG signals.
+    classification from ECG images.
     """
     
     def __init__(self, 
-                 input_shape=(5000, 12), 
+                 input_shape=(224, 224, 3),  # Changed to image format (height, width, channels)
                  num_classes=5, 
                  learning_rate=0.001,
                  weight_decay=0.0001,
                  dropout_rate=0.3,
                  filters_base=64,
                  use_self_supervision=True,
+                 use_attention=True,
+                 backbone='efficientnet',
                  model_dir='model_checkpoints'):
         """
-        Initialize the CardioVisionNet model
+        Initialize the CardioVisionNet model for ECG image-based CVD prediction
         
         Args:
-            input_shape: Shape of input ECG signal (samples, leads)
+            input_shape: Shape of input ECG image (height, width, channels)
             num_classes: Number of CVD classification categories
             learning_rate: Initial learning rate for optimizer
             weight_decay: Weight decay coefficient for regularization
             dropout_rate: Dropout rate for uncertainty estimation
             filters_base: Base number of filters for convolutional layers
             use_self_supervision: Whether to use self-supervised pre-training
+            use_attention: Whether to use attention mechanisms
+            backbone: CNN backbone architecture ('efficientnet', 'resnet', 'densenet')
             model_dir: Directory to save model checkpoints
         """
         self.input_shape = input_shape
@@ -75,6 +119,8 @@ class CardioVisionNet:
         self.dropout_rate = dropout_rate
         self.filters_base = filters_base
         self.use_self_supervision = use_self_supervision
+        self.use_attention = use_attention
+        self.backbone = backbone
         self.model_dir = model_dir
         
         # Ensure model directory exists
@@ -88,52 +134,46 @@ class CardioVisionNet:
             self.pretraining_model = self._build_self_supervised_model()
     
     def _build_model(self):
-        """Constructs the complete CardioVisionNet architecture"""
-        inputs = Input(shape=self.input_shape, name="ecg_input")
+        """Constructs the complete CardioVisionNet architecture for ECG images"""
+        inputs = Input(shape=self.input_shape, name="ecg_image_input")
         
-        # 1. Signal preprocessing module
-        x = self._signal_preprocessing_module(inputs)
+        # 1. Image preprocessing and enhancement module
+        x = self._image_preprocessing_module(inputs)
         
         # 2. Multi-pathway feature extraction
-        path1 = self._temporal_pathway(x)
-        path2 = self._morphological_pathway(x)
-        path3 = self._frequency_pathway(x)
-        path4 = self._phase_space_pathway(x)
+        path1 = self._cnn_backbone_pathway(x)
+        path2 = self._local_pattern_pathway(x)
+        path3 = self._wavelet_transform_pathway(x)
         
         # 3. Multi-modal fusion with attention
-        fused_features = self._cross_attention_fusion([path1, path2, path3, path4])
+        fused_features = self._cross_attention_fusion([path1, path2, path3])
         
-        # 4. Transformer encoder for temporal context
+        # 4. Transformer encoder for spatial-temporal context
         context_features = self._transformer_encoder_block(fused_features)
         
-        # 5. Cardiac graph neural network
-        graph_features = self._cardiac_graph_neural_network(context_features)
+        # 5. Physiologically-informed attention (simulated for ECG regions)
+        if self.use_attention:
+            attended_features = self._physiological_attention(context_features)
+        else:
+            attended_features = context_features
         
-        # 6. Physiological attention mechanism (moved earlier in pipeline)
-        attended_features = self._physiological_attention(graph_features)
-        
-        # 7. Meta-learning adaptation module
+        # 6. Meta-learning adaptation module
         adaptive_features = self._meta_learning_adaptation(attended_features)
         
-        # Branch out for different outputs
-        
-        # Main classification branch
+        # Classification features
         classification_features = layers.Dense(256, activation='swish')(adaptive_features)
         classification_features = layers.Dropout(self.dropout_rate)(classification_features)
         
-        # Multiple specialized output heads for different CVD types
-        main_logits = layers.Dense(self.num_classes, name="logits")(classification_features)
-        
-        # Uncertainty estimation branch
-        uncertainty = layers.Dense(self.num_classes, activation='sigmoid', name='uncertainty')(classification_features)
+        # 7. NEW: Explainable Decision Pathways with Uncertainty Quantification
+        main_logits, uncertainty, explanation_logits, component_uncertainties, component_weights = self._decision_pathway_explainer(classification_features)
         
         # HRV prediction branch (additional clinical metric)
         hrv_features = layers.Dense(64, activation='swish')(adaptive_features)
         hrv_prediction = layers.Dense(1, name="hrv_prediction")(hrv_features)
         
-        # QT interval prediction branch (additional clinical metric)
-        qt_features = layers.Dense(64, activation='swish')(adaptive_features)
-        qt_prediction = layers.Dense(1, name="qt_prediction")(qt_features)
+        # Explainability output (Grad-CAM compatible)
+        gradcam_features = layers.Dense(64, activation='swish', name='gradcam_features')(adaptive_features)
+        gradcam_output = layers.Dense(1, name="gradcam_output")(gradcam_features)
         
         # Main classification output with uncertainty calibration
         calibrated_logits = layers.Lambda(
@@ -143,86 +183,143 @@ class CardioVisionNet:
         
         main_output = layers.Activation('softmax', name="cvd_prediction")(calibrated_logits)
         
+        # Create component-specific outputs for interpretability
+        component_outputs = {}
+        for component, logits in explanation_logits.items():
+            component_outputs[f"{component}_prediction"] = layers.Activation('softmax', name=f"{component}_prediction")(logits)
+        
         # Combine all outputs
         outputs = [
             main_output,          # CVD classification
             uncertainty,          # Prediction uncertainty
             hrv_prediction,       # Heart rate variability estimate
-            qt_prediction         # QT interval estimate
+            gradcam_output,       # For explainability
+            component_weights     # Component weights for interpretability
         ]
         
+        # Add component-specific predictions to outputs
+        for name, output in component_outputs.items():
+            outputs.append(output)
+        
         model = Model(inputs=inputs, outputs=outputs)
+        
+        # Build loss dictionary with main outputs
+        loss_dict = {
+            "cvd_prediction": self._adaptive_focal_loss,
+            "uncertainty": 'binary_crossentropy',
+            "hrv_prediction": 'mean_squared_error',
+            "gradcam_output": 'mean_squared_error',
+            "component_weights": 'categorical_crossentropy'  # Optional - can be supervised if you have component labels
+        }
+        
+        # Add losses for component predictions - can be used for regularization
+        for name in component_outputs.keys():
+            loss_dict[name] = 'categorical_crossentropy'
+        
+        # Loss weights - focus mainly on the primary prediction task
+        loss_weights = {
+            "cvd_prediction": 1.0,
+            "uncertainty": 0.2,
+            "hrv_prediction": 0.3,
+            "gradcam_output": 0.0,
+            "component_weights": 0.1
+        }
+        
+        # Add small weights for component predictions
+        for name in component_outputs.keys():
+            loss_weights[name] = 0.05
+        
+        # Metrics for main prediction
+        metrics_dict = {
+            "cvd_prediction": [
+                'accuracy', 
+                self._sensitivity, 
+                self._specificity, 
+                self._f1_score,
+                tf.keras.metrics.AUC(name='auc')
+            ],
+            "hrv_prediction": [tf.keras.metrics.MeanAbsoluteError()]
+        }
         
         # Compile with specialized loss and metrics
         model.compile(
             optimizer=self._build_optimizer(),
-            loss={
-                "cvd_prediction": self._adaptive_focal_loss,
-                "uncertainty": 'binary_crossentropy',  # Supervise uncertainty when ground truth available
-                "hrv_prediction": 'mean_squared_error',
-                "qt_prediction": 'mean_squared_error'
-            },
-            loss_weights={
-                "cvd_prediction": 1.0,
-                "uncertainty": 0.2,
-                "hrv_prediction": 0.3,
-                "qt_prediction": 0.3
-            },
-            metrics={
-                "cvd_prediction": [
-                    'accuracy', 
-                    self._sensitivity, 
-                    self._specificity, 
-                    self._f1_score,
-                    tf.keras.metrics.AUC(name='auc')
-                ],
-                "hrv_prediction": [tf.keras.metrics.MeanAbsoluteError()],
-                "qt_prediction": [tf.keras.metrics.MeanAbsoluteError()]
-            }
+            loss=loss_dict,
+            loss_weights=loss_weights,
+            metrics=metrics_dict
         )
         
         return model
 
     def _build_self_supervised_model(self):
-        """Build a self-supervised pretraining model based on contrastive learning"""
-        # Create base encoder
-        inputs = Input(shape=self.input_shape)
-        x = self._signal_preprocessing_module(inputs)
+        """Build a multi-view contrastive self-supervised pretraining model for ECG images"""
+        # Create encoder backbone
+        input_shape = self.input_shape
         
-        # Use multiple pathways for feature extraction
-        path1 = self._temporal_pathway(x)
-        path2 = self._frequency_pathway(x)
+        def _create_encoder():
+            inputs = Input(shape=input_shape)
+            x = self._image_preprocessing_module(inputs)
+            x = self._cnn_backbone_pathway(x)
+            
+            # Project to embedding space
+            embedding = layers.Dense(256, activation=None)(x)
+            embedding = tf.nn.l2_normalize(embedding, axis=1)
+            return Model(inputs=inputs, outputs=embedding, name="ssl_encoder")
         
-        # Fusion
-        fused = self._cross_attention_fusion([path1, path2])
+        encoder = _create_encoder()
         
-        # Project to embedding space
-        embedding = layers.Dense(256, activation=None)(fused)
-        embedding = tf.nn.l2_normalize(embedding, axis=1)
+        # Create inputs for four different views
+        temporal_view = Input(shape=input_shape, name="temporal_view")
+        morphological_view = Input(shape=input_shape, name="morphological_view") 
+        frequency_view = Input(shape=input_shape, name="frequency_view")
+        phase_view = Input(shape=input_shape, name="phase_view")
         
-        # Create model
-        encoder = Model(inputs=inputs, outputs=embedding, name="ssl_encoder")
+        # Get embeddings from each view
+        temporal_emb = encoder(temporal_view)
+        morphological_emb = encoder(morphological_view)
+        frequency_emb = encoder(frequency_view)
+        phase_emb = encoder(phase_view)
         
-        # Create contrastive learning model
-        original_inputs = Input(shape=self.input_shape, name="original")
-        augmented_inputs = Input(shape=self.input_shape, name="augmented")
-        
-        original_embeddings = encoder(original_inputs)
-        augmented_embeddings = encoder(augmented_inputs)
-        
-        # Temperature parameter for contrastive loss
-        temperature = 0.1
-        
-        # Define contrastive learning model with a custom loss
+        # Create model with multi-view inputs and outputs
         ssl_model = Model(
-            inputs=[original_inputs, augmented_inputs],
-            outputs=[original_embeddings, augmented_embeddings]
+            inputs=[temporal_view, morphological_view, frequency_view, phase_view],
+            outputs=[temporal_emb, morphological_emb, frequency_emb, phase_emb]
         )
+        
+        # Custom multi-view contrastive loss
+        def multi_view_contrastive_loss(y_true, y_pred):
+            # Unpack embeddings from different views
+            embeddings = y_pred
+            batch_size = tf.shape(embeddings[0])[0]
+            
+            # Calculate similarity matrix for all pairs of views
+            loss = 0
+            temperature = 0.1
+            
+            # Loop through all pairs of views
+            for i in range(len(embeddings)):
+                for j in range(i+1, len(embeddings)):
+                    # Calculate cosine similarity between all samples
+                    sim_matrix = tf.matmul(embeddings[i], tf.transpose(embeddings[j])) / temperature
+                    
+                    # Positive pairs are the corresponding samples in different views
+                    positive_mask = tf.eye(batch_size)
+                    
+                    # InfoNCE loss
+                    row_loss = tf.nn.softmax_cross_entropy_with_logits(
+                        labels=positive_mask, logits=sim_matrix)
+                    col_loss = tf.nn.softmax_cross_entropy_with_logits(
+                        labels=positive_mask, logits=tf.transpose(sim_matrix))
+                    
+                    # Combine losses from both directions
+                    loss += (tf.reduce_mean(row_loss) + tf.reduce_mean(col_loss)) / 2
+            
+            return loss / (len(embeddings) * (len(embeddings) - 1) / 2)
         
         # Compile with contrastive loss
         ssl_model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
-            loss=self._contrastive_loss_fn(temperature)
+            loss=multi_view_contrastive_loss
         )
         
         return ssl_model, encoder
@@ -384,7 +481,7 @@ class CardioVisionNet:
         return x
     
     def _transformer_encoder_block(self, x, heads=8, dim_head=64, dropout=0.1):
-        """Transformer encoder block for temporal context"""
+        """Transformer encoder block for spatial-temporal context"""
         # Reshape if needed
         if len(x.shape) == 2:
             x = tf.expand_dims(x, axis=1)
@@ -436,18 +533,31 @@ class CardioVisionNet:
         return graph_embedding
     
     def _physiological_attention(self, x):
-        """Attention mechanism based on cardiac physiology"""
-        # Generate attention scores for different physiological aspects
-        attention_pr = layers.Dense(64, activation='swish', name='pr_interval_attention')(x)
-        attention_qrs = layers.Dense(64, activation='swish', name='qrs_attention')(x)
-        attention_qt = layers.Dense(64, activation='swish', name='qt_interval_attention')(x)
+        """Advanced attention mechanism based on cardiac physiology regions in ECG images"""
+        # Dynamic cardiac cycle-aware attention with learnable period parameters
+        cycle_params = tf.Variable(initial_value=[0.2, 0.4, 0.6], trainable=True, name='cycle_params')
         
-        # Combine attention scores
-        attention_scores = layers.Concatenate()([attention_pr, attention_qrs, attention_qt])
-        attention_scores = layers.Dense(x.shape[-1], activation='softmax')(attention_scores)
+        # Generate attention scores for different physiological aspects
+        attention_maps = []
+        for wave_type in ['p_wave', 'qrs_complex', 't_wave', 'st_segment', 'qt_interval']:
+            wave_features = layers.Dense(64, activation='swish', name=f'{wave_type}_attention')(x)
+            wave_attention = layers.Dense(1, activation='sigmoid')(wave_features)
+            attention_maps.append(wave_attention)
+        
+        # Dynamic fusion based on signal quality estimation
+        quality_estimator = layers.Dense(len(attention_maps), activation='softmax', name='quality_estimator')(x)
+        quality_estimator = tf.reshape(quality_estimator, [-1, 1, len(attention_maps)])
+        
+        # Weight attention maps by estimated quality
+        attention_tensor = tf.stack(attention_maps, axis=-1)
+        adaptive_attention = tf.reduce_sum(attention_tensor * quality_estimator, axis=-1)
         
         # Apply attention to features
-        attended_features = layers.Multiply()([x, attention_scores])
+        attended_features = layers.Multiply()([x, adaptive_attention])
+        
+        # Add residual connection for stable training
+        attended_features = layers.Add()([x, attended_features])
+        attended_features = layers.LayerNormalization()(attended_features)
         
         return attended_features
     
@@ -747,16 +857,45 @@ class CardioVisionNet:
                 val_qt = np.zeros((len(x_val), 1))
             else:
                 val_qt = validation_qt
+        
+        # Create dummy data for component weights and component predictions
+        # We don't have ground truth for these, so they're for regularization purposes
+        component_names = ['p_wave', 'qrs_complex', 't_wave', 'st_segment', 'qt_interval']
+        n_components = len(component_names)
+        
+        # Create uniform distribution for component weights (no prior knowledge)
+        uniform_weights = np.ones((len(x_train), n_components)) / n_components
+        
+        # Setup training data with all outputs
+        y_dict = {
+            "cvd_prediction": y_train,
+            "uncertainty": np.zeros_like(y_train),  # Typically unsupervised
+            "hrv_prediction": hrv_train,
+            "gradcam_output": np.zeros((len(x_train), 1)),  # Dummy data
+            "component_weights": uniform_weights
+        }
+        
+        # Add component-specific targets (same as main target for now)
+        for component in component_names:
+            y_dict[f"{component}_prediction"] = y_train
+        
+        # Setup validation data with all outputs if available
+        validation_data_dict = None
+        if validation_data is not None:
+            val_uniform_weights = np.ones((len(x_val), n_components)) / n_components
+            val_dict = {
+                "cvd_prediction": y_val,
+                "uncertainty": np.zeros_like(y_val),
+                "hrv_prediction": val_hrv,
+                "gradcam_output": np.zeros((len(x_val), 1)),
+                "component_weights": val_uniform_weights
+            }
+            
+            # Add component-specific validation targets
+            for component in component_names:
+                val_dict[f"{component}_prediction"] = y_val
                 
-            validation_data = (
-                x_val, 
-                {
-                    "cvd_prediction": y_val,
-                    "uncertainty": np.zeros_like(y_val),  # Typically unsupervised
-                    "hrv_prediction": val_hrv,
-                    "qt_prediction": val_qt
-                }
-            )
+            validation_data_dict = (x_val, val_dict)
         
         # Setup callbacks
         log_dir = os.path.join(self.model_dir, "logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -772,18 +911,10 @@ class CardioVisionNet:
             TensorBoard(log_dir=log_dir, histogram_freq=1, profile_batch='500,520')
         ]
         
-        # Training data with all outputs
-        y_dict = {
-            "cvd_prediction": y_train,
-            "uncertainty": np.zeros_like(y_train),  # Typically unsupervised
-            "hrv_prediction": hrv_train,
-            "qt_prediction": qt_train
-        }
-        
         # Train model
         return self.model.fit(
             x_train, y_dict,
-            validation_data=validation_data,
+            validation_data=validation_data_dict,
             epochs=epochs,
             batch_size=batch_size,
             callbacks=callbacks,
@@ -803,36 +934,53 @@ class CardioVisionNet:
                 predictions: Mean prediction probabilities
                 uncertainties: Standard deviation of predictions
                 hrv_predictions: Heart rate variability predictions
-                qt_predictions: QT interval predictions
+                component_predictions: Component-specific predictions
+                component_weights: Importance weights for each cardiac component
                 all_samples: All Monte Carlo samples (if needed for further analysis)
         """
         # Enable dropout during inference
         cvd_predictions = []
         uncertainty_estimates = []
         hrv_predictions = []
-        qt_predictions = []
+        gradcam_outputs = []
+        component_weights_list = []
+        
+        # Track component-specific predictions
+        component_names = ['p_wave', 'qrs_complex', 't_wave', 'st_segment', 'qt_interval']
+        component_predictions = {name: [] for name in component_names}
         
         # Multiple forward passes with dropout enabled
         for _ in range(monte_carlo_samples):
             outputs = self.model(x, training=True)
             
-            # Extract different outputs
+            # Extract different outputs - order matches the model's outputs list
             cvd_pred = outputs[0]
             uncertainty = outputs[1]
             hrv_pred = outputs[2]
-            qt_pred = outputs[3]
+            gradcam = outputs[3]
+            comp_weights = outputs[4]
             
-            # Store predictions
+            # Store main predictions
             cvd_predictions.append(cvd_pred)
             uncertainty_estimates.append(uncertainty)
             hrv_predictions.append(hrv_pred)
-            qt_predictions.append(qt_pred)
+            gradcam_outputs.append(gradcam)
+            component_weights_list.append(comp_weights)
+            
+            # Store component-specific predictions
+            for i, component in enumerate(component_names):
+                component_predictions[component].append(outputs[5 + i])
             
         # Stack predictions
         cvd_preds_stacked = tf.stack(cvd_predictions, axis=0)
         uncertainty_stacked = tf.stack(uncertainty_estimates, axis=0)
         hrv_preds_stacked = tf.stack(hrv_predictions, axis=0)
-        qt_preds_stacked = tf.stack(qt_predictions, axis=0)
+        component_weights_stacked = tf.stack(component_weights_list, axis=0)
+        
+        # Stack component predictions
+        component_preds_stacked = {
+            name: tf.stack(preds, axis=0) for name, preds in component_predictions.items()
+        }
         
         # Calculate mean and standard deviation for CVD predictions
         mean_cvd_pred = tf.reduce_mean(cvd_preds_stacked, axis=0)
@@ -841,7 +989,12 @@ class CardioVisionNet:
         # Calculate mean for other outputs
         mean_uncertainty = tf.reduce_mean(uncertainty_stacked, axis=0)
         mean_hrv = tf.reduce_mean(hrv_preds_stacked, axis=0)
-        mean_qt = tf.reduce_mean(qt_preds_stacked, axis=0)
+        mean_component_weights = tf.reduce_mean(component_weights_stacked, axis=0)
+        
+        # Calculate mean for component predictions
+        mean_component_preds = {
+            name: tf.reduce_mean(preds, axis=0) for name, preds in component_preds_stacked.items()
+        }
         
         # Return all predictions
         return {
@@ -849,14 +1002,16 @@ class CardioVisionNet:
             "cvd_uncertainties": std_cvd_pred,
             "model_uncertainty": mean_uncertainty,
             "hrv_predictions": mean_hrv,
-            "qt_predictions": mean_qt,
-            "all_cvd_samples": cvd_preds_stacked  # For further uncertainty analysis
+            "component_weights": mean_component_weights,
+            "component_predictions": mean_component_preds,
+            "all_cvd_samples": cvd_preds_stacked,  # For further uncertainty analysis
+            "all_component_samples": component_preds_stacked  # For component-specific uncertainty
         }
         
     def evaluate_model(self, x_test, y_test, hrv_test=None, qt_test=None, 
                      monte_carlo_samples=10, verbose=1):
         """
-        Comprehensive model evaluation with uncertainty estimation
+        Comprehensive model evaluation with uncertainty estimation and explainability
         
         Args:
             x_test: Test ECG data
@@ -867,7 +1022,7 @@ class CardioVisionNet:
             verbose: Verbosity level
             
         Returns:
-            Dictionary with evaluation metrics
+            Dictionary with evaluation metrics and explainability information
         """
         # Get predictions with uncertainty
         predictions = self.predict(x_test, monte_carlo_samples=monte_carlo_samples)
@@ -988,7 +1143,7 @@ class CardioVisionNet:
         
     def plot_results(self, evaluation_results, save_dir=None):
         """
-        Generate visualizations for model evaluation
+        Generate visualizations for model evaluation with explainability
         
         Args:
             evaluation_results: Results from evaluate_model method
@@ -1094,6 +1249,136 @@ class CardioVisionNet:
             
         figures['class_performance'] = plt.gcf()
         
+        # 5. NEW: Component Importance Visualization
+        if 'component_importance' in evaluation_results:
+            plt.figure(figsize=(10, 6))
+            
+            component_importance = evaluation_results['component_importance']
+            components = list(component_importance.keys())
+            importances = [component_importance[c] for c in components]
+            
+            # Sort by importance
+            sorted_idx = np.argsort(importances)
+            sorted_components = [components[i] for i in sorted_idx]
+            sorted_importances = [importances[i] for i in sorted_idx]
+            
+            # Format component names for better display
+            display_components = [c.replace('_', ' ').title() for c in sorted_components]
+            
+            plt.barh(display_components, sorted_importances, color='skyblue')
+            plt.xlabel('Importance Weight')
+            plt.ylabel('ECG Component')
+            plt.title('Cardiac Component Importance')
+            plt.tight_layout()
+            
+            if save_dir:
+                plt.savefig(os.path.join(save_dir, 'component_importance.png'), dpi=300, bbox_inches='tight')
+                
+            figures['component_importance'] = plt.gcf()
+        
+        # 6. NEW: Component Performance Comparison
+        if 'component_metrics' in evaluation_results:
+            plt.figure(figsize=(12, 6))
+            
+            component_metrics = evaluation_results['component_metrics']
+            components = list(component_metrics.keys())
+            
+            # Extract accuracy and F1 for each component
+            accuracies = [component_metrics[c]['accuracy'] for c in components]
+            f1_scores = [component_metrics[c]['f1_score'] for c in components]
+            
+            # Add overall model performance
+            components.append('Full Model')
+            accuracies.append(evaluation_results['accuracy'])
+            f1_scores.append(evaluation_results['f1_macro'])
+            
+            # Format component names for better display
+            display_components = [c.replace('_', ' ').title() for c in components]
+            
+            x = np.arange(len(components))
+            width = 0.35
+            
+            plt.bar(x - width/2, accuracies, width, label='Accuracy')
+            plt.bar(x + width/2, f1_scores, width, label='F1 Score')
+            
+            plt.xlabel('Component')
+            plt.ylabel('Score')
+            plt.title('Performance by Cardiac Component')
+            plt.xticks(x, display_components, rotation=45, ha='right')
+            plt.legend()
+            plt.tight_layout()
+            
+            if save_dir:
+                plt.savefig(os.path.join(save_dir, 'component_performance.png'), dpi=300, bbox_inches='tight')
+                
+            figures['component_performance'] = plt.gcf()
+        
+        # 7. NEW: Class-Component Importance Heatmap
+        if 'class_components_importance' in evaluation_results:
+            plt.figure(figsize=(12, 8))
+            
+            class_components = evaluation_results['class_components_importance']
+            
+            # Create a matrix for the heatmap
+            classes = list(class_components.keys())
+            if len(classes) > 0:
+                first_class = list(class_components.keys())[0]
+                components = list(class_components[first_class].keys())
+                
+                heatmap_data = np.zeros((len(classes), len(components)))
+                
+                for i, cls in enumerate(classes):
+                    for j, comp in enumerate(components):
+                        heatmap_data[i, j] = class_components[cls][comp]
+                
+                # Format axis labels
+                display_components = [c.replace('_', ' ').title() for c in components]
+                display_classes = [c.replace('_', ' ').title() for c in classes]
+                
+                # Create heatmap
+                ax = sns.heatmap(heatmap_data, annot=True, fmt=".2f", cmap="YlGnBu",
+                               xticklabels=display_components, yticklabels=display_classes)
+                plt.title('Component Importance by Class')
+                plt.xlabel('Cardiac Component')
+                plt.ylabel('Class')
+                plt.tight_layout()
+                
+                if save_dir:
+                    plt.savefig(os.path.join(save_dir, 'class_component_heatmap.png'), dpi=300, bbox_inches='tight')
+                    
+                figures['class_component_heatmap'] = plt.gcf()
+        
+        # 8. NEW: Component Error Analysis
+        if 'component_error_analysis' in evaluation_results:
+            plt.figure(figsize=(10, 6))
+            
+            component_error = evaluation_results['component_error_analysis']
+            components = list(component_error.keys())
+            error_diffs = [component_error[c] for c in components]
+            
+            # Sort by absolute difference
+            sorted_idx = np.argsort([abs(d) for d in error_diffs])[::-1]  # Reverse for descending
+            sorted_components = [components[i] for i in sorted_idx]
+            sorted_diffs = [error_diffs[i] for i in sorted_idx]
+            
+            # Format component names for better display
+            display_components = [c.replace('_', ' ').title() for c in sorted_components]
+            
+            # Use different colors for positive and negative differences
+            colors = ['green' if d > 0 else 'red' for d in sorted_diffs]
+            
+            plt.barh(display_components, sorted_diffs, color=colors)
+            plt.axvline(x=0, color='black', linestyle='-', alpha=0.3)
+            plt.xlabel('Importance Difference (Correct - Incorrect)')
+            plt.ylabel('ECG Component')
+            plt.title('Component Error Analysis\nPositive values indicate greater importance in correct predictions')
+            plt.tight_layout()
+            
+            if save_dir:
+                plt.savefig(os.path.join(save_dir, 'component_error_analysis.png'), dpi=300, bbox_inches='tight')
+                
+            figures['component_error_analysis'] = plt.gcf()
+        
         # Return all figure objects
         return figures
 
@@ -1116,7 +1401,9 @@ class CardioVisionNet:
             "weight_decay": self.weight_decay,
             "dropout_rate": self.dropout_rate,
             "filters_base": self.filters_base,
-            "use_self_supervision": self.use_self_supervision
+            "use_self_supervision": self.use_self_supervision,
+            "use_attention": self.use_attention,
+            "backbone": self.backbone
         }
         
         import json
@@ -1141,6 +1428,349 @@ class CardioVisionNet:
         
         print(f"Model loaded from {filepath}")
         return model
+
+    def _image_preprocessing_module(self, inputs):
+        """Advanced image preprocessing and enhancement for ECG charts"""
+        # Normalization
+        x = layers.Lambda(lambda x: x / 255.0)(inputs)
+        
+        # Contrast enhancement with learnable parameters
+        alpha = tf.Variable(1.0, trainable=True)
+        beta = tf.Variable(0.0, trainable=True)
+        x = layers.Lambda(lambda x: alpha * x + beta)(x)
+        
+        # Edge enhancement with convolutions
+        edge_detect = layers.Conv2D(16, 3, padding='same', activation='linear')(x)
+        edge_detect = layers.BatchNormalization()(edge_detect)
+        edge_detect = layers.Activation('tanh')(edge_detect)
+        
+        # Combine with original
+        x = layers.Concatenate()([x, edge_detect])
+        x = layers.Conv2D(self.input_shape[-1], 1, padding='same')(x)
+        
+        # Apply learnable gamma correction for better feature visibility
+        gamma = tf.Variable(1.0, trainable=True)
+        x = layers.Lambda(lambda x: tf.pow(x, gamma))(x)
+        
+        return x
+    
+    def _cnn_backbone_pathway(self, x):
+        """Main CNN backbone for feature extraction from ECG images"""
+        # Choose backbone based on configuration
+        if self.backbone == 'efficientnet':
+            base_model = EfficientNetV2B0(
+                include_top=False, 
+                weights='imagenet',
+                input_shape=self.input_shape,
+                drop_connect_rate=0.2
+            )
+        elif self.backbone == 'resnet':
+            base_model = ResNet50(
+                include_top=False,
+                weights='imagenet',
+                input_shape=self.input_shape
+            )
+        elif self.backbone == 'densenet':
+            base_model = DenseNet121(
+                include_top=False,
+                weights='imagenet',
+                input_shape=self.input_shape
+            )
+        else:
+            raise ValueError(f"Unknown backbone: {self.backbone}")
+        
+        # Freeze early layers for transfer learning
+        for layer in base_model.layers[:int(len(base_model.layers) * 0.7)]:
+            layer.trainable = False
+            
+        # Get backbone features
+        backbone_features = base_model(x)
+        
+        # Add ECG-specific adaptation layers
+        adapted_features = layers.Conv2D(self.filters_base * 4, 1, padding='same')(backbone_features)
+        adapted_features = layers.BatchNormalization()(adapted_features)
+        adapted_features = layers.Activation('swish')(adapted_features)
+        
+        # Global pooling
+        pooled_features = layers.GlobalAveragePooling2D()(adapted_features)
+        
+        return pooled_features
+    
+    def _local_pattern_pathway(self, x):
+        """Extract local ECG patterns like P-QRS-T waves from images"""
+        # Multi-scale pattern detection
+        # Small receptive field for fine details (P, Q, S waves)
+        small_patterns = layers.Conv2D(self.filters_base, 3, strides=1, padding='same')(x)
+        small_patterns = layers.BatchNormalization()(small_patterns)
+        small_patterns = layers.Activation('relu')(small_patterns)
+        small_patterns = layers.MaxPooling2D(2)(small_patterns)
+        
+        # Medium receptive field for QRS complexes
+        medium_patterns = layers.Conv2D(self.filters_base, 5, strides=1, padding='same')(x)
+        medium_patterns = layers.BatchNormalization()(medium_patterns)
+        medium_patterns = layers.Activation('relu')(medium_patterns)
+        medium_patterns = layers.MaxPooling2D(2)(medium_patterns)
+        
+        # Large receptive field for T waves and overall morphology
+        large_patterns = layers.Conv2D(self.filters_base, 9, strides=1, padding='same')(x)
+        large_patterns = layers.BatchNormalization()(large_patterns)
+        large_patterns = layers.Activation('relu')(large_patterns)
+        large_patterns = layers.MaxPooling2D(2)(large_patterns)
+        
+        # Combine patterns at same resolution
+        small_patterns = layers.Conv2D(self.filters_base, 3, strides=1, padding='same')(small_patterns)
+        medium_patterns = layers.Conv2D(self.filters_base, 3, strides=1, padding='same')(medium_patterns)
+        large_patterns = layers.Conv2D(self.filters_base, 3, strides=1, padding='same')(large_patterns)
+        
+        # Deep feature extraction
+        small_patterns = self._ecg_pattern_block(small_patterns, self.filters_base*2)
+        medium_patterns = self._ecg_pattern_block(medium_patterns, self.filters_base*2)
+        large_patterns = self._ecg_pattern_block(large_patterns, self.filters_base*2)
+        
+        # Global pooling for each scale
+        small_pool = layers.GlobalAveragePooling2D()(small_patterns)
+        medium_pool = layers.GlobalAveragePooling2D()(medium_patterns)
+        large_pool = layers.GlobalAveragePooling2D()(large_patterns)
+        
+        # Combine all scales
+        combined = layers.Concatenate()([small_pool, medium_pool, large_pool])
+        
+        # Feature integration
+        local_features = layers.Dense(256, activation='swish')(combined)
+        
+        return local_features
+    
+    def _wavelet_transform_pathway(self, x):
+        """Advanced learnable wavelet transform for extracting frequency and scale features"""
+        # Convert to grayscale if RGB
+        if self.input_shape[-1] == 3:
+            x_gray = layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x))(x)
+        else:
+            x_gray = x
+        
+        # Create learnable wavelet parameters - mother wavelet shape
+        wavelet_size = 9
+        mother_wavelet = tf.Variable(
+            initial_value=tf.random.normal([wavelet_size, wavelet_size, 1, 16]),
+            trainable=True, name='mother_wavelet'
+        )
+        
+        # Learnable scales parameters
+        scales = tf.Variable(
+            initial_value=[1.0, 2.0, 4.0, 8.0, 16.0],
+            trainable=True, name='wavelet_scales'
+        )
+        
+        # Function to create scaled versions of the mother wavelet
+        def create_scaled_wavelet(scale_idx):
+            scale = scales[scale_idx]
+            # Dynamically resize the wavelet kernel based on scale
+            scaled_size = tf.cast(tf.math.ceil(wavelet_size * scale), tf.int32)
+            # Ensure odd size for symmetric wavelet
+            scaled_size = scaled_size + (1 - scaled_size % 2)
+            # Resize the mother wavelet
+            scaled_wavelet = tf.image.resize(
+                mother_wavelet[:,:,0,:], 
+                [scaled_size, scaled_size],
+                method='bilinear'
+            )
+            # Reshape for conv2d
+            scaled_wavelet = tf.reshape(scaled_wavelet, 
+                                       [scaled_size, scaled_size, 1, 16])
+            return scaled_wavelet
+            
+        # Apply multi-scale wavelet transform
+        wavelet_outputs = []
+        for i in range(len(scales)):
+            # Get scaled wavelet
+            wavelet_kernel = create_scaled_wavelet(i)
+            # Apply wavelet as convolution
+            wavelet_response = tf.nn.conv2d(
+                x_gray, wavelet_kernel, strides=[1,1,1,1], padding='SAME'
+            )
+            wavelet_outputs.append(wavelet_response)
+        
+        # Process each scale
+        processed_scales = []
+        for i, wavelet_output in enumerate(wavelet_outputs):
+            # Further process each scale
+            scale_features = layers.Conv2D(32, 3, padding='same', activation='relu')(wavelet_output)
+            scale_features = layers.BatchNormalization()(scale_features)
+            # Add frequency-domain regularization
+            scale_features = self._add_frequency_constraints(scale_features, i)
+            
+            # Global attention to identify important regions in this scale
+            attention = layers.Conv2D(1, 7, padding='same', activation='sigmoid')(scale_features)
+            attended_features = layers.Multiply()([scale_features, attention])
+            
+            # Downsample proportionally to scale
+            pool_size = 2 ** min(i, 3)  # Limit max pooling size
+            if pool_size > 1:
+                attended_features = layers.MaxPooling2D(pool_size)(attended_features)
+                
+            processed_scales.append(attended_features)
+        
+        # Adaptive cross-scale fusion
+        # First normalize all outputs to same spatial dimensions
+        resized_scales = []
+        target_shape = processed_scales[-1].shape[1:3]  # Use smallest scale's shape
+        
+        for scale_features in processed_scales:
+            # Resize to match target shape
+            if scale_features.shape[1:3] != target_shape:
+                resized = layers.Reshape(
+                    (scale_features.shape[1], scale_features.shape[2], -1)
+                )(scale_features)
+                resized = tf.image.resize(
+                    resized, target_shape, method='bilinear'
+                )
+            else:
+                resized = scale_features
+            resized_scales.append(resized)
+        
+        # Concatenate all scales along channel dimension
+        multi_scale_features = layers.Concatenate(axis=-1)(resized_scales)
+        
+        # Channel attention for scale importance weighting
+        scale_importance = self._channel_attention_module(multi_scale_features)
+        weighted_features = layers.Multiply()([multi_scale_features, scale_importance])
+        
+        # Add 1x1 conv to reduce channels and integrate information
+        integrated_features = layers.Conv2D(64, 1, padding='same', activation='swish')(weighted_features)
+        integrated_features = layers.BatchNormalization()(integrated_features)
+        
+        # Global pooling
+        pooled_features = layers.GlobalAveragePooling2D()(integrated_features)
+        
+        # Final integration
+        wavelet_features = layers.Dense(256, activation='swish')(pooled_features)
+        
+        return wavelet_features
+        
+    def _add_frequency_constraints(self, x, scale_idx):
+        """Add frequency-domain constraints according to scale"""
+        # Different constraints for different scales
+        if scale_idx == 0:  # High frequency (small scale)
+            # High-pass characteristic - encourage high frequency preservation
+            return layers.Lambda(lambda x: x * 1.2)(x)
+        elif scale_idx == len(scales) - 1:  # Low frequency (large scale)
+            # Low-pass characteristic - smooth activations
+            smoothing_kernel = tf.constant(
+                [[0.05, 0.1, 0.05], [0.1, 0.4, 0.1], [0.05, 0.1, 0.05]],
+                dtype=tf.float32
+            )
+            smoothing_kernel = tf.reshape(smoothing_kernel, [3, 3, 1, 1])
+            smoothing_kernel = tf.tile(smoothing_kernel, [1, 1, x.shape[-1], 1])
+            
+            # Apply smoothing
+            x_smoothed = tf.nn.depthwise_conv2d(
+                x, smoothing_kernel, strides=[1,1,1,1], padding='SAME'
+            )
+            return x_smoothed
+        else:
+            # Band-pass characteristic for mid-scales
+            return x
+            
+    def _channel_attention_module(self, x):
+        """Channel attention module for weighting different frequency bands"""
+        # Global average pooling for each channel
+        gap = layers.GlobalAveragePooling2D()(x)
+        gap = tf.reshape(gap, [-1, 1, 1, x.shape[-1]])
+        
+        # Global max pooling for each channel
+        gmp = layers.GlobalMaxPooling2D()(x)
+        gmp = tf.reshape(gmp, [-1, 1, 1, x.shape[-1]])
+        
+        # Combine pooling operations
+        combined = layers.Concatenate(axis=-1)([gap, gmp])
+        
+        # Shared MLP
+        mlp = layers.Conv2D(x.shape[-1] // 4, 1, activation='relu')(combined)
+        mlp = layers.Conv2D(x.shape[-1], 1, activation='sigmoid')(mlp)
+        
+        # Split the attention weights back
+        attention = mlp[:, :, :, :x.shape[-1]]
+        
+        return attention
+    
+    def _ecg_pattern_block(self, x, filters):
+        """Specialized convolutional block for extracting ECG patterns"""
+        # Depthwise separable convolution for efficient feature extraction
+        x = layers.SeparableConv2D(filters, 3, padding='same')(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation('swish')(x)
+        
+        # Residual connection
+        shortcut = x
+        
+        # Expand features
+        x = layers.SeparableConv2D(filters, 3, padding='same')(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation('swish')(x)
+        
+        x = layers.SeparableConv2D(filters, 3, padding='same')(x)
+        x = layers.BatchNormalization()(x)
+        
+        # Add shortcut
+        x = layers.Add()([x, shortcut])
+        x = layers.Activation('swish')(x)
+        
+        # Spatial attention to focus on important regions
+        attention = layers.Conv2D(1, 7, padding='same', activation='sigmoid')(x)
+        x = layers.Multiply()([x, attention])
+        
+        return x
+
+    def _decision_pathway_explainer(self, features):
+        """Novel interpretability module that explains decisions through cardiac-specific pathways"""
+        # Create explanation masks for each cardiac component
+        explanation_components = {}
+        explanation_logits = {}
+        
+        for component in ['p_wave', 'qrs_complex', 't_wave', 'st_segment', 'qt_interval']:
+            # Create component-specific attention mask
+            mask = layers.Dense(features.shape[-1], activation='sigmoid', name=f'{component}_mask')(features)
+            # Apply mask to features to get component-specific contribution
+            component_contribution = layers.Multiply()([features, mask])
+            # Get logits for this component
+            component_logits = layers.Dense(self.num_classes, name=f'{component}_logits')(component_contribution)
+            # Store for later use
+            explanation_components[component] = component_contribution
+            explanation_logits[component] = component_logits
+        
+        # Evidential deep learning for uncertainty quantification
+        # Generate evidence for Dirichlet distribution parameters
+        evidence = layers.Dense(self.num_classes * 4, activation='softplus')(features)
+        alpha, beta, gamma, delta = tf.split(evidence, 4, axis=-1)
+        
+        # Calculate uncertainty from evidential parameters
+        # Epistemic (model) uncertainty from variance of the Dirichlet distribution
+        uncertainty = beta / (alpha - 1 + 1e-10)  # Add epsilon to prevent division by zero
+        
+        # Calculate uncertainty for each component
+        component_uncertainties = {}
+        for component, comp_features in explanation_components.items():
+            comp_evidence = layers.Dense(4, activation='softplus')(comp_features)
+            comp_alpha = comp_evidence[:, 0:1]
+            comp_uncertainty = 1.0 / (comp_alpha + 1e-10)
+            component_uncertainties[component] = comp_uncertainty
+        
+        # Calculate final logits as weighted sum of component logits
+        component_weights = layers.Dense(len(explanation_components), activation='softmax', 
+                                        name='component_weights')(features)
+        
+        final_logits = None
+        for i, (component, logits) in enumerate(explanation_logits.items()):
+            weighted_logits = layers.Lambda(
+                lambda x: x[0] * tf.reshape(x[1][:, i], [-1, 1])
+            )([logits, component_weights])
+            
+            if final_logits is None:
+                final_logits = weighted_logits
+            else:
+                final_logits = layers.Add()([final_logits, weighted_logits])
+        
+        return final_logits, uncertainty, explanation_logits, component_uncertainties, component_weights
 
 #----------------------- Data Loading Functions -----------------------#
 
@@ -1960,6 +2590,8 @@ def create_cardiovisionnet_ui():
                     dropout_rate=dropout_rate,
                     filters_base=filters_base,
                     use_self_supervision=use_self_supervision,
+                    use_attention=True,
+                    backbone='efficientnet',
                     model_dir=checkpoint_dir
                 )
                 
@@ -2070,78 +2702,6 @@ def create_cardiovisionnet_ui():
                 run_button.disabled = False
                 stop_button.disabled = True
     
-    # Stop handler
-    def handle_stop(b):
-        nonlocal training_in_progress, model
-        if not training_in_progress:
-            return
-        
-        with status_output:
-            print("Stopping training...")
-            
-            # Stop training
-            if model and hasattr(model, 'model'):
-                model.model.stop_training = True
-        
-        # Reset UI state
-        training_in_progress = False
-        run_button.disabled = False
-        stop_button.disabled = True
-    
     # Connect event handlers
     run_button.on_click(handle_run)
     stop_button.on_click(handle_stop)
-    
-    # Return the UI
-    return ui
-
-# Function to download a sample ECG dataset for testing
-def download_sample_dataset():
-    """Download a sample ECG dataset for testing"""
-    # PhysioNet PTB-XL dataset (small subset)
-    url = "https://storage.googleapis.com/download.tensorflow.org/data/ecg_ptbxl_small.zip"
-    
-    print("Downloading sample ECG dataset...")
-    sample_data_path = download_from_url(url, 'ecg_ptbxl_small.zip')
-    
-    print(f"Sample dataset downloaded to {sample_data_path}")
-    print("You can use this path in the UI to test CardioVisionNet")
-    
-    return sample_data_path
-
-#----------------------- Main Execution -----------------------#
-
-# Display UI and instructions
-print("CardioVisionNet for ECG-based CVD Prediction")
-print("--------------------------------------------")
-print("This notebook allows you to train CardioVisionNet on your ECG data.")
-print("You can load data from a URL, Google Drive, or upload your own files.")
-print("\nInstructions:")
-print("1. Select your data source (URL, Upload, or Google Drive)")
-print("2. Configure data parameters (lead count, sample length)")
-print("3. Set train/test/validation split ratios")
-print("4. Configure training parameters (epochs, batch size, etc.)")
-print("5. Specify where to save checkpoints in Google Drive")
-print("6. Click 'Run CardioVisionNet' to start training")
-print("\nTo stop training at any time, click 'Stop Training'.")
-print("\nLoading UI...")
-
-# Display UI
-ui = create_cardiovisionnet_ui()
-display(ui)
-
-# Offer to download sample dataset
-print("\n")
-download_sample = widgets.Button(
-    description='Download Sample Dataset',
-    disabled=False,
-    button_style='info',
-    tooltip='Download a small ECG dataset for testing',
-    icon='download'
-)
-
-def on_download_sample(b):
-    sample_path = download_sample_dataset()
-    
-download_sample.on_click(on_download_sample)
-display(download_sample)
